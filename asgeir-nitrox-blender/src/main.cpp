@@ -19,12 +19,6 @@ TFT_eSprite tft_percent_cell = TFT_eSprite(&tft); // Sprite object graph1
 #define CELL_PADDING_LEFT 40
 #define HEADER_ROW_Y 92
 
-
-#define PIN_CALIBRATE_BUTTON 1
-#define PIN_POTENTIOMETER 2
-#define PIN_SOLENOID_SIGNAL 3
-
-
 #define O2_I2Caddress 0x48
 
 #define RA_SIZE 40
@@ -129,6 +123,7 @@ void setup()
   tft.setRotation(3);
   tft.setSwapBytes(true);
   tft.pushImage(0, 0, 320, 170, (uint16_t *)img_logo);
+
   delay(2000);
 
   ledcSetup(0, 2000, 8);
@@ -162,6 +157,7 @@ void setup()
   // LOAD CALIBRATION
   restoreCalibration(); 
 }
+
 
 
 long lastScreenUpdate = 0;

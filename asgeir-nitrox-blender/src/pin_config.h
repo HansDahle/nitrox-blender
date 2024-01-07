@@ -30,3 +30,8 @@
 
 #define PIN_TOUCH_INT                16
 #define PIN_TOUCH_RES                21
+
+/*Peripherals*/
+#define PIN_CALIBRATE_BUTTON    1
+#define PIN_POTENTIOMETER       2
+#define PIN_SOLENOID_SIGNAL     3
