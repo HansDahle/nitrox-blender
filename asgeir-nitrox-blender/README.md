@@ -40,13 +40,13 @@ Since I have multiple "Rebreathing" friends and they need to replace oxygen cell
 
 # Diagram
 
-![Wiring](/docs/wiring.drawio.svg)
+![Wiring](docs/wiring.drawio.svg)
 
 # Control box 
 
-![control box](./image/control-box.png)
+![control box](image/control-box.png)
 
-![control box section 1](./image/control-box-section-1.png)
-![control box section 2](./image/control-box-section-2.png)
-![lilygo mount](./image/lilygo-mount.png)
-![lilygo mount sketch](./image/lilygo-mount-sketch.png.png)
+![control box section 1](image/control-box-section-1.png)
+![control box section 2](image/control-box-section-2.png)
+![lilygo mount](image/lilygo-mount.png)
+![lilygo mount sketch](image/lilygo-mount-sketch.png.png)
