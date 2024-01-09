@@ -38,3 +38,15 @@ The relay will close the circuit to the solenoid when a `HIGH` signal is provide
 ## Oxygen cells
 Since I have multiple "Rebreathing" friends and they need to replace oxygen cells every year, these are used 🙈. They still have more love to give after one year. Cells should be replaced when voltage drops below 8mV in normal air.
 
+# Diagram
+
+![Wiring](/docs/wiring.drawio.svg)
+
+# Control box 
+
+![control box](/image/control-box.png)
+
+![control box section 1](/image/control-box-section-1.png)
+![control box section 2](/image/control-box-section-2.png)
+![lilygo mount](/image/lilygo-mount.png)
+![lilygo mount sketch](/image/lilygo-mount-sketch.png.png)
