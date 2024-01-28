@@ -13,6 +13,7 @@ TFT_eSPI tft = TFT_eSPI();
 
 TFT_eSprite tft_percent = TFT_eSprite(&tft); // Sprite object graph1
 TFT_eSprite tft_percent_cell = TFT_eSprite(&tft); // Sprite object graph1
+TFT_eSprite tft_menu = TFT_eSprite(&tft);
 
 #define CELL_WIDTH 120
 #define CELL_SPACING 5
@@ -27,6 +28,13 @@ TFT_eSprite tft_percent_cell = TFT_eSprite(&tft); // Sprite object graph1
 #define SENSOR_THRESHOLD_MILLIVOLT_MIN 7
 #define SENSOR_THRESHOLD_MILLIVOLT_MAX 20
 #define SOLENOID_CLOSE_DELAY 300 // milliseconds
+
+#define MENU_ITEM_CLOSE 0
+#define MENU_ITEM_CLEAR_CALIBRATION 1
+#define MENU_ITEM_DISABLE_CELL_1 2
+#define MENU_ITEM_DISABLE_CELL_2 3
+
+bool isMenuMode = false;
 
 struct SolenoidStatus {
   int maxO2Percent;
@@ -49,6 +57,7 @@ struct SensorReading {
   float avgMv;
   float o2Percent;
   bool sensorWarning;
+  bool isDisabledByMenu;
 
   /// @brief If the cell reading at an "reasonable" voltage.. E.g. if calibration was performed when cell was misbehaving.
   /// @return true if calibration value is within acceptable range.
@@ -67,9 +76,21 @@ struct O2Reading {
   bool cellError;
 };
 
+struct Menu {
+  int selectedOption;
+  bool isMenuMode;
+
+};
+struct MenuOption {
+  String label;
+  int actionId;
+};
+
 void drawSolenoidValue();
 void drawCellInfo(int index);
 void drawMainOxygenValue();
+void drawMenu();
+void drawInitalScreen();
 void handleSensor();
 void handleButtons();
 void handlePotentiometer();
@@ -78,6 +99,8 @@ void calibrate();
 void restoreCalibration();
 void persistCalibration();
 float readOxygenCellVoltage();
+void menuLongClick();
+void menuShortClick();
 
 Preferences preferences;
 RunningAverage RA(RA_SIZE);
@@ -88,6 +111,13 @@ Adafruit_ADS1115 ads1115;  // Construct an ads1115
 float gain = 0.0625F;
 
 const char* cellHeader[2] = { "CELL 1", "CELL 2" };
+MenuOption menuOptions[] = {
+  { "Close", MENU_ITEM_CLOSE },
+  { "Clear Calibration", MENU_ITEM_CLEAR_CALIBRATION },
+  { "Disable Cell 1", MENU_ITEM_DISABLE_CELL_1 },
+  { "Disable Cell 2", MENU_ITEM_DISABLE_CELL_2 }
+};
+Menu menuState;
 
 SystemStatus systemState;
 SensorReading sensorValue[2];
@@ -130,21 +160,7 @@ void setup()
   ledcAttachPin(PIN_LCD_BL, 0);
   ledcWrite(0, 255);
 
-  tft.fillScreen(TFT_BLACK);
-
-  // Draw headers
-  tft.setTextSize(1);
-  tft.setTextColor(TFT_BLACK);
-
-  tft.fillRect(0, 92, CELL_WIDTH, 15, TFT_GREEN);
-  tft.drawString("CELL 1", CELL_PADDING_LEFT, HEADER_ROW_Y, 2);
-
-  tft.fillRect(CELL_WIDTH + CELL_SPACING, HEADER_ROW_Y, CELL_WIDTH, 15, TFT_GREEN);
-  tft.drawString("CELL 2", CELL_PADDING_LEFT + CELL_WIDTH + CELL_SPACING, HEADER_ROW_Y, 2);
-
-  tft.fillRect(250, HEADER_ROW_Y, 90, 15, TFT_RED);
-  tft.drawString("SOLENOID", 256, HEADER_ROW_Y, 2);
-
+  drawInitalScreen();
 
   tft_percent.setColorDepth(8);
   tft_percent.createSprite(340, 90);
@@ -154,10 +170,12 @@ void setup()
   tft_percent_cell.createSprite(CELL_WIDTH - 50, 30);
   tft_percent_cell.setFreeFont(&FreeSerif18pt7b);
 
+  tft_menu.setColorDepth(8);
+  tft_menu.createSprite(300, 150);
+
   // LOAD CALIBRATION
   restoreCalibration(); 
 }
-
 
 
 long lastScreenUpdate = 0;
@@ -166,20 +184,28 @@ void loop()
 {
   handleSensor();
   handlePotentiometer();
-  handleButtons();
+
+  if (!isMenuMode) {
+    handleButtons();
+  }
   handleSolenoid();
 
   // Update Screen
 
   if ((millis() - lastScreenUpdate) > 500)
   {
-    drawMainOxygenValue();
 
-    tft.setTextColor(TFT_GREEN, TFT_BLACK);    
+    if (menuState.isMenuMode) {
+      drawMenu();
+    } else {
+      drawMainOxygenValue();
 
-    drawCellInfo(0);
-    drawCellInfo(1);
-    drawSolenoidValue();
+      tft.setTextColor(TFT_GREEN, TFT_BLACK);    
+
+      drawCellInfo(0);
+      drawCellInfo(1);
+      drawSolenoidValue();
+    }
 
     lastScreenUpdate = millis();
   }
@@ -220,7 +246,7 @@ void handleSensor() {
 
       sensorValue[cellIndex].sensorWarning = isReadingError;
 
-      if (!isReadingError) {
+      if (!isReadingError && !sensorValue[cellIndex].isDisabledByMenu) {
         o2Percent += sensorValue[cellIndex].o2Percent;
         validReadingsCount++;
       }
@@ -249,7 +275,7 @@ void handleButtons() {
     pressLength = millis() - pressStarted;
   }
 
-  bool isLongPress = pressLength > 4000;
+  bool isLongPress = pressLength > 2000;
   
   int buttonState = calibrateButton.getState();
 
@@ -263,18 +289,30 @@ void handleButtons() {
   if (isLongPress && !hasTriggeredClear) {
     Serial.println("Long button press");
 
-    preferences.clear();
-    tft.drawString("Calibration cleared", 0, 0, 4);
-    delay(3000);
+    if (menuState.isMenuMode) {
+      menuLongClick();
+    } else {
+      menuState.isMenuMode = true;
+    }
+
+    // preferences.clear();
+    // tft.drawString("Calibration cleared", 0, 0, 4);
+    // delay(3000);
 
     hasTriggeredClear = true;
   }
 
   if(calibrateButton.isReleased()) {
-    if (!isLongPress) {
-      Serial.println("CALIBRATING");
-      calibrate();
-    }
+      
+      if (!isLongPress) {
+
+        if (menuState.isMenuMode) {
+          menuShortClick();
+        } else {
+          Serial.println("CALIBRATING");
+          calibrate();
+        }
+      }
 
     // Reset state
     pressStarted = -1;
@@ -359,6 +397,23 @@ float readOxygenCellVoltage() {
   return value;
 }
 
+void drawInitalScreen() {
+  tft.fillScreen(TFT_BLACK);
+
+  // Draw headers
+  tft.setTextSize(1);
+  tft.setTextColor(TFT_BLACK);
+
+  tft.fillRect(0, 92, CELL_WIDTH, 15, TFT_GREEN);
+  tft.drawString("CELL 1", CELL_PADDING_LEFT, HEADER_ROW_Y, 2);
+
+  tft.fillRect(CELL_WIDTH + CELL_SPACING, HEADER_ROW_Y, CELL_WIDTH, 15, TFT_GREEN);
+  tft.drawString("CELL 2", CELL_PADDING_LEFT + CELL_WIDTH + CELL_SPACING, HEADER_ROW_Y, 2);
+
+  tft.fillRect(250, HEADER_ROW_Y, 90, 15, TFT_RED);
+  tft.drawString("SOLENOID", 256, HEADER_ROW_Y, 2);
+}
+
 void drawMainOxygenValue() {
   float o2 = systemState.o2;
 
@@ -422,7 +477,7 @@ void drawCellInfo(int index) {
     float mv = sensorValue[index].avgMv;
     float calibration = cellCalibration[index].value;
     bool calibrationIsValid = cellCalibration[index].isValid();
-    bool isDisabled = sensorValue[index].isValid() == false;
+    bool isDisabled = (sensorValue[index].isValid() == false) || sensorValue[index].isDisabledByMenu;
 
     int offsetX = index * (CELL_WIDTH + CELL_SPACING);
 
@@ -480,4 +535,55 @@ void drawCellInfo(int index) {
       tft_percent_cell.drawFloat(o2, 1, 0, 0);
       tft_percent_cell.pushSprite(offsetX + 50, 112);
     }
+}
+
+
+void drawMenu() {
+  // 
+  tft_menu.fillSprite(TFT_BLACK);
+  tft_menu.drawRect(0, 0, 300, 150, TFT_YELLOW);
+  tft_menu.drawRect(1, 1, 298, 148, TFT_YELLOW);
+
+  for (int i = 0; i < 4; i++) {
+    int itemX = 6;
+    int itemY = 6 + (i * 30);
+
+    if (menuState.selectedOption == i) {
+      tft_menu.fillRect(itemX, itemY, 288, 30, TFT_YELLOW);
+      tft_menu.setTextColor(TFT_BLACK);
+    } else {
+      tft_menu.setTextColor(TFT_YELLOW);
+    }
+    tft_menu.drawString(menuOptions[i].label, itemX + 3, itemY + 4, 4);
+  }
+  
+  tft_menu.pushSprite(10, 10);
+}
+
+void menuLongClick() {
+
+  if (menuState.selectedOption == MENU_ITEM_CLOSE) {
+  }
+
+  if (menuState.selectedOption == MENU_ITEM_CLEAR_CALIBRATION) {
+    preferences.clear();
+  }
+
+  if (menuState.selectedOption == MENU_ITEM_DISABLE_CELL_1) {
+    sensorValue[0].isDisabledByMenu = !sensorValue[0].isDisabledByMenu;
+  }
+
+  if (menuState.selectedOption == MENU_ITEM_DISABLE_CELL_2) {
+    sensorValue[1].isDisabledByMenu = !sensorValue[1].isDisabledByMenu;
+  }
+  
+  menuState.isMenuMode = false;
+  drawInitalScreen();
+}
+
+void menuShortClick() {
+  menuState.selectedOption += 1;
+  if (menuState.selectedOption > 3) {
+    menuState.selectedOption = 0;
+  }
 }
