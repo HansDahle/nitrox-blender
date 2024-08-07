@@ -50,3 +50,8 @@ Since I have multiple "Rebreathing" friends and they need to replace oxygen cell
 ![control box section 2](image/control-box-section-2.png)
 ![lilygo mount](image/lilygo-mount.png)
 ![lilygo mount sketch](image/lilygo-mount-sketch.png.png)
+
+
+MAC: 
+Nitrox: 34:85:18:71:47:D4
+Client: 30:30:F9:34:8B:5C

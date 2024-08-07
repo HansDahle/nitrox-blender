@@ -4,8 +4,8 @@
 #include "TFT_eSPI.h" /* Please use the TFT library provided in the library. */
 #include "img_logo.h"
 #include "pin_config.h"
-#include <Adafruit_ADS1X15.h>
-#include <RunningAverage.h>
+#include <esp_now.h>
+#include <WiFi.h>
 
 #define FONT_LARGE &Dialog_plain_100 // Key label font 2
 
@@ -14,6 +14,12 @@ TFT_eSPI tft = TFT_eSPI();
 TFT_eSprite tft_percent = TFT_eSprite(&tft); // Sprite object graph1
 TFT_eSprite tft_percent_cell = TFT_eSprite(&tft); // Sprite object graph1
 TFT_eSprite tft_menu = TFT_eSprite(&tft);
+
+esp_now_peer_info_t Client;
+#define CHANNEL 1
+#define PRINTSCANRESULTS 0
+#define DELETEBEFOREPAIR 0
+
 
 #define CELL_WIDTH 120
 #define CELL_SPACING 5
@@ -86,27 +92,20 @@ struct MenuOption {
   int actionId;
 };
 
+struct EspNowMessage {
+  SystemStatus systemState;
+  SensorReading readingCell1;
+  SensorReading readingCell2;
+  CellCalibration cellCalibrationCell1;
+  CellCalibration cellCalibrationCell2;
+  SolenoidStatus solenoid;
+};
+
 void drawSolenoidValue();
 void drawCellInfo(int index);
 void drawMainOxygenValue();
 void drawMenu();
 void drawInitalScreen();
-void handleSensor();
-void handleButtons();
-void handlePotentiometer();
-void handleSolenoid();
-void calibrate();
-void restoreCalibration();
-void persistCalibration();
-float readOxygenCellVoltage();
-void menuLongClick();
-void menuShortClick();
-
-Preferences preferences;
-RunningAverage RA(RA_SIZE);
-RunningAverage RA2(RA_SIZE);
-ezButton calibrateButton(PIN_CALIBRATE_BUTTON); 
-Adafruit_ADS1115 ads1115;  // Construct an ads1115
 
 float gain = 0.0625F;
 
@@ -123,29 +122,27 @@ SystemStatus systemState;
 SensorReading sensorValue[2];
 CellCalibration cellCalibration[2];
 SolenoidStatus solenoid;
-RunningAverage cellReadings[2] = { RunningAverage(RA_SIZE), RunningAverage(RA_SIZE) };
+EspNowMessage espMessageData;
 
+// callback when data is received
+void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
+  memcpy(&espMessageData, incomingData, sizeof(espMessageData));
+
+  cellCalibration[0] = espMessageData.cellCalibrationCell1;
+  cellCalibration[1] = espMessageData.cellCalibrationCell2;
+  sensorValue[0] = espMessageData.readingCell1;
+  sensorValue[1] = espMessageData.readingCell2;
+  solenoid = espMessageData.solenoid;
+  systemState = espMessageData.systemState;
+}
 
 void setup()
 {
-  preferences.begin("calibration", false);
-
   pinMode(PIN_POWER_ON, OUTPUT);
   digitalWrite(PIN_POWER_ON, HIGH);
-  pinMode(PIN_SOLENOID_SIGNAL, OUTPUT);
-  pinMode(PIN_POTENTIOMETER, INPUT);
-
-  calibrateButton.setDebounceTime(50);
 
   Serial.begin(115200);
   Serial.println("Hello T-Display-S3");
-
-  // Setup amp
-  Wire.begin(PIN_IIC_SDA, PIN_IIC_SCL);
-  ads1115.setGain(GAIN_TWO);
-  ads1115.setDataRate(RATE_ADS1115_64SPS);
-  ads1115.begin();
-  // End
 
   // Setup screen
   tft.begin();
@@ -173,8 +170,15 @@ void setup()
   tft_menu.setColorDepth(8);
   tft_menu.createSprite(300, 150);
 
-  // LOAD CALIBRATION
-  restoreCalibration(); 
+  /* Communication */
+  // Set device as a Wi-Fi Station
+  WiFi.mode(WIFI_STA);
+
+  // Init ESP-NOW
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("Error initializing ESP-NOW");
+  }
+  esp_now_register_recv_cb(OnDataRecv);
 }
 
 
@@ -182,30 +186,16 @@ long lastScreenUpdate = 0;
 
 void loop()
 {
-  handleSensor();
-  handlePotentiometer();
-
-  if (!isMenuMode) {
-    handleButtons();
-  }
-  handleSolenoid();
-
-  // Update Screen
-
   if ((millis() - lastScreenUpdate) > 500)
   {
 
-    if (menuState.isMenuMode) {
-      drawMenu();
-    } else {
-      drawMainOxygenValue();
+    drawMainOxygenValue();
 
-      tft.setTextColor(TFT_GREEN, TFT_BLACK);    
+    tft.setTextColor(TFT_GREEN, TFT_BLACK);    
 
-      drawCellInfo(0);
-      drawCellInfo(1);
-      drawSolenoidValue();
-    }
+    drawCellInfo(0);
+    drawCellInfo(1);
+    drawSolenoidValue();
 
     lastScreenUpdate = millis();
   }
@@ -216,186 +206,9 @@ void loop()
 // Record when we last did a reading to manage when we should read the next time.
 long lastReadMillis = 0;
 
-/*
- * Read a value every 50 ms
-*/
-void handleSensor() {
-
-  if (millis() - lastReadMillis > 50) {
-
-    readOxygenCellVoltage();
-
-    float o2Percent = 0;
-    int validReadingsCount = 0;
-
-    for (int cellIndex = 0; cellIndex < 2; cellIndex++) {
-      bool isCalibrated = cellCalibration[cellIndex].isValid();
-      bool dataInconsistency = (cellReadings[cellIndex].getMax() - cellReadings[cellIndex].getMin()) > 6; // Check if there is large difference in readings
-      float maxVal = cellReadings[cellIndex].getMaxInBuffer();
-      float minVal = cellReadings[cellIndex].getMinInBuffer();
-      // Serial.printf("Cell #%d: min [%f] max [%f] diff [%f] dev [%f] err [%f]", cellIndex, maxVal, minVal, (maxVal - minVal), cellReadings[cellIndex].getStandardDeviation(), cellReadings[cellIndex].getStandardError());
-      // Serial.println();
-
-      sensorValue[cellIndex].avgMv = abs(cellReadings[cellIndex].getAverage());
-      sensorValue[cellIndex].o2Percent = (sensorValue[cellIndex].avgMv / cellCalibration[cellIndex].value) * 20.9;
-      if (sensorValue[cellIndex].o2Percent > 99.9) {
-        sensorValue[cellIndex].o2Percent = 99.9;
-      }
-
-      bool isReadingError = !isCalibrated || !sensorValue[cellIndex].isValid();
-
-      sensorValue[cellIndex].sensorWarning = isReadingError;
-
-      if (!isReadingError && !sensorValue[cellIndex].isDisabledByMenu) {
-        o2Percent += sensorValue[cellIndex].o2Percent;
-        validReadingsCount++;
-      }
-
-    }
-
-    // Calculate combined percentage
-    systemState.isReadingError = validReadingsCount == 0;
-    if (validReadingsCount > 0) {
-      systemState.o2 = o2Percent / validReadingsCount;
-    } else {
-      systemState.o2 = -1;
-    }
-
-    lastReadMillis = millis();    
-  }  
-}
 
 long pressStarted = -1;
 bool hasTriggeredClear = false;
-
-void handleButtons() {
-  calibrateButton.loop();
-  long pressLength = 0;
-  if (pressStarted > 0) {
-    pressLength = millis() - pressStarted;
-  }
-
-  bool isLongPress = pressLength > 2000;
-  
-  int buttonState = calibrateButton.getState();
-
-  if (calibrateButton.isPressed() && pressStarted < 0) {
-      Serial.println("Press started");
-
-      pressStarted = millis();
-  }
-
-
-  if (isLongPress && !hasTriggeredClear) {
-    Serial.println("Long button press");
-
-    if (menuState.isMenuMode) {
-      menuLongClick();
-    } else {
-      menuState.isMenuMode = true;
-    }
-
-    // preferences.clear();
-    // tft.drawString("Calibration cleared", 0, 0, 4);
-    // delay(3000);
-
-    hasTriggeredClear = true;
-  }
-
-  if(calibrateButton.isReleased()) {
-      
-      if (!isLongPress) {
-
-        if (menuState.isMenuMode) {
-          menuShortClick();
-        } else {
-          Serial.println("CALIBRATING");
-          calibrate();
-        }
-      }
-
-    // Reset state
-    pressStarted = -1;
-    hasTriggeredClear = false;
-  }
-}
-void handlePotentiometer() {
-  int data = analogRead(PIN_POTENTIOMETER);
-  
-  solenoid.maxO2Percent = map(data, 0, 4095, 0, 40);  
-}
-
-void handleSolenoid() {
-  if (!systemState.isReadingError && systemState.o2 < solenoid.maxO2Percent) {
-
-    solenoid.solenoidClosedAt = millis();
-
-    if (!solenoid.isOpen) {
-      digitalWrite(PIN_SOLENOID_SIGNAL, HIGH);
-      solenoid.isOpen = true;
-    }
-  } else {
-    if (solenoid.isOpen) {
-      if ((millis() - solenoid.solenoidClosedAt) > SOLENOID_CLOSE_DELAY) {
-        digitalWrite(PIN_SOLENOID_SIGNAL, LOW);
-        solenoid.isOpen = false;
-      }
-    }
-  }
-}
-
-void calibrate() {
-  Serial.println("Calibrating...");
-
-  // renderCalibratingStarted();
-  tft.fillRect(0, 0, 340, 90, TFT_GREEN);
-  tft.setTextColor(TFT_BLACK);
-  tft.drawString("CALIBRATING", 80, 37, 4);
-
-  delay(3000);
-
-  for (int i = 0; i < RA_SIZE; i++) {
-    handleSensor();
-
-    drawCellInfo(0);
-    drawCellInfo(1);
-    
-    delay(100);
-  }
-
-  for (int i = 0; i < 2; i++) {
-    float calibrationVoltage = sensorValue[i].avgMv;
-
-    cellCalibration[i].calibratedAtMs = millis();
-    cellCalibration[i].value = calibrationVoltage;    
-  }
-
-  tft.fillRect(0, 0, 340, 90, TFT_GREEN);
-  tft.drawString("DONE", 125, 35, 4);
-  
-  delay(2000);
-
-  persistCalibration();
-}
-
-void persistCalibration() {
-  preferences.putFloat("cell1", cellCalibration[0].value);
-  preferences.putFloat("cell2", cellCalibration[1].value);
-}
-void restoreCalibration() {
-  cellCalibration[0].value = preferences.getFloat("cell1", 0);
-  cellCalibration[1].value = preferences.getFloat("cell2", 0);
-}
-
-float readOxygenCellVoltage() {
-  float value = ads1115.readADC_Differential_0_1() * gain;
-  float value2 = ads1115.readADC_Differential_2_3() * gain;
-
-  cellReadings[0].addValue(value);
-  cellReadings[1].addValue(value2);
-
-  return value;
-}
 
 void drawInitalScreen() {
   tft.fillScreen(TFT_BLACK);
@@ -535,55 +348,4 @@ void drawCellInfo(int index) {
       tft_percent_cell.drawFloat(o2, 1, 0, 0);
       tft_percent_cell.pushSprite(offsetX + 50, 112);
     }
-}
-
-
-void drawMenu() {
-  // 
-  tft_menu.fillSprite(TFT_BLACK);
-  tft_menu.drawRect(0, 0, 300, 150, TFT_YELLOW);
-  tft_menu.drawRect(1, 1, 298, 148, TFT_YELLOW);
-
-  for (int i = 0; i < 4; i++) {
-    int itemX = 6;
-    int itemY = 6 + (i * 30);
-
-    if (menuState.selectedOption == i) {
-      tft_menu.fillRect(itemX, itemY, 288, 30, TFT_YELLOW);
-      tft_menu.setTextColor(TFT_BLACK);
-    } else {
-      tft_menu.setTextColor(TFT_YELLOW);
-    }
-    tft_menu.drawString(menuOptions[i].label, itemX + 3, itemY + 4, 4);
-  }
-  
-  tft_menu.pushSprite(10, 10);
-}
-
-void menuLongClick() {
-
-  if (menuState.selectedOption == MENU_ITEM_CLOSE) {
-  }
-
-  if (menuState.selectedOption == MENU_ITEM_CLEAR_CALIBRATION) {
-    preferences.clear();
-  }
-
-  if (menuState.selectedOption == MENU_ITEM_DISABLE_CELL_1) {
-    sensorValue[0].isDisabledByMenu = !sensorValue[0].isDisabledByMenu;
-  }
-
-  if (menuState.selectedOption == MENU_ITEM_DISABLE_CELL_2) {
-    sensorValue[1].isDisabledByMenu = !sensorValue[1].isDisabledByMenu;
-  }
-  
-  menuState.isMenuMode = false;
-  drawInitalScreen();
-}
-
-void menuShortClick() {
-  menuState.selectedOption += 1;
-  if (menuState.selectedOption > 3) {
-    menuState.selectedOption = 0;
-  }
 }
