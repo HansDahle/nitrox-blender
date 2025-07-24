@@ -1,0 +1,6 @@
+@NitroxMonitor_HostAddress = http://localhost:5212
+
+GET {{NitroxMonitor_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
